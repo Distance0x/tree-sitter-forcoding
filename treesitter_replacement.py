@@ -884,6 +884,172 @@ def _apply_parentheses_ts(code: str, layers: int) -> Tuple[str, List[Dict[str, A
     return b.decode("utf-8"), transforms
 
 
+def _apply_deadcode_ts(
+    code: str,
+    max_per_func: int,
+    prob: float,
+    rng: Optional[random.Random] = None,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """在函数体中插入 dead code 语句块:
+
+    形式为:
+        __dc_tmp_k = 1
+        __dc_tmp_k += 1
+
+    规则:
+    - 仅解析 tree-sitter 成功后执行。
+    - 每个函数最多插入 max_per_func 个块。
+    - 每次尝试按 prob 决定是否插入 (伯努利)。
+    - 变量名确保在该函数局部唯一，使用前缀 __dc_tmp_ 递增。
+    - 插入位置: 函数体内部随机语句边界，不放在第一条语句之前（除非只有一条语句）。
+    - 不改变原有缩进结构; 使用函数体内首条真实可执行语句的缩进或默认 4 空格。
+    - 返回修改后的代码与 transforms 列表。
+    """
+    if max_per_func <= 0 or prob <= 0:
+        return code, []
+    parser = _get_parser()
+    if parser is None:
+        return code, []
+    if rng is None:
+        rng = random.Random()
+    try:
+        code_bytes = code.encode("utf-8")
+        tree = parser.parse(code_bytes)
+    except Exception:
+        return code, []
+
+    root = tree.root_node
+    replacements: List[Tuple[int, int, str]] = []
+    transforms: List[Dict[str, Any]] = []
+
+    # helper to get source text
+    def text(node):
+        return code_bytes[node.start_byte : node.end_byte].decode("utf-8")
+
+    # collect function_definition nodes
+    func_nodes: List[Any] = []
+
+    def collect(n):
+        if n.type == "function_definition":
+            func_nodes.append(n)
+        for c in n.children:
+            collect(c)
+
+    collect(root)
+
+    # We'll insert by building new body prefix and replacing from function colon to end of body first statement.
+    # For safety, we just find the block (suite) node: usually child field name 'body'.
+    def field(node, name: str):
+        try:
+            return node.child_by_field_name(name)
+        except Exception:
+            return None
+
+    for fn in func_nodes:
+        body = field(fn, "body")
+        if body is None:
+            continue
+        # body should be a block (indented_block) or simple statement.
+        # We only handle indented_block to keep formatting stable.
+        if body.type not in ("block", "suite", "indented_block"):
+            continue
+        # 提取实质语句序列
+        stmt_children = [c for c in body.children if c.type != ":"]
+        # Filter to real statements (skip newline/indent/dedent tokens if present)
+        real_stmts = [c for c in stmt_children if c.type not in ("\n", "indent", "dedent")]
+        if not real_stmts:
+            continue
+        # 计算函数内第一条真实语句的行起始(字节)与其缩进（仅空格/Tab）。
+        first_stmt = real_stmts[0]
+        first_line_byte_start = code_bytes.rfind(b"\n", 0, first_stmt.start_byte) + 1
+        leading_bytes = code_bytes[first_line_byte_start:first_stmt.start_byte]
+        # leading_bytes 可能包含非空白（例如装饰器 @ 后续同一行等），若出现非空白字符则回退默认 4 空格
+        if all(ch in (32, 9) for ch in leading_bytes):  # space or tab
+            try:
+                base_indent = leading_bytes.decode("utf-8")
+            except Exception:
+                base_indent = "    "
+        else:
+            base_indent = "    "
+        if not base_indent:
+            base_indent = "    "
+
+        inserted = 0
+        used_names: Set[str] = set()
+        # collect existing identifiers in function to avoid collisions
+        def collect_ids(n):
+            if n.type == "identifier":
+                used_names.add(text(n))
+            for c in n.children:
+                collect_ids(c)
+        collect_ids(fn)
+
+        # 计算所有可选插入点: 使用语句所在行首位置(行起始 byte)，保证插入块拥有正确缩进
+        # 不选索引0（避免总是在第一条语句前）；若只有一条语句就允许第一条
+        stmt_line_starts: List[int] = []  # 以“字节偏移”为准
+        for s in real_stmts:
+            ls = code_bytes.rfind(b"\n", 0, s.start_byte) + 1
+            stmt_line_starts.append(ls)
+        if len(stmt_line_starts) > 1:
+            candidate_points = stmt_line_starts[1:]
+        else:
+            candidate_points = stmt_line_starts
+
+        prefix_map: Dict[int, str] = {}
+        k = 0
+        import re as _re  # 局部使用避免顶层依赖
+        while inserted < max_per_func:
+            if rng.random() >= prob:
+                break
+            # find unused temp name
+            while True:
+                candidate = f"__dc_tmp_{k}"
+                k += 1
+                if candidate not in used_names:
+                    used_names.add(candidate)
+                    break
+            insertion_point = rng.choice(candidate_points) if candidate_points else stmt_line_starts[0]
+            # 针对该插入点获取当前行前导空白（真实缩进层级），全部基于字节偏移避免破坏多字节字符
+            line_byte_start = insertion_point  # candidate 已是行首 byte
+            # 读取该行实际缩进（直到遇到非空格/Tab 或文件结束）
+            j = line_byte_start
+            while j < len(code_bytes):
+                bch = code_bytes[j:j+1]
+                if bch not in (b" ", b"\t"):
+                    break
+                j += 1
+            indent_bytes = code_bytes[line_byte_start:j]
+            try:
+                dyn_indent = indent_bytes.decode("utf-8") if indent_bytes else base_indent
+            except Exception:
+                dyn_indent = base_indent
+            block = f"{dyn_indent}{candidate} = 1\n{dyn_indent}{candidate} += 1\n"
+            prefix_map.setdefault(insertion_point, "")
+            prefix_map[insertion_point] += block
+            inserted += 1
+            transforms.append(
+                {
+                    "type": "dead_code",
+                    "func_start_byte": fn.start_byte,
+                    "inserted_at": insertion_point,
+                    "var": candidate,
+                    "lines": 2,
+                }
+            )
+        if inserted > 0:
+            for ip, blocks in prefix_map.items():
+                replacements.append((ip, ip, blocks))
+
+    if not replacements:
+        return code, []
+    # apply insertions (they have zero-length spans so order doesn't matter much; still reverse sort)
+    replacements.sort(key=lambda x: x[0], reverse=True)
+    b = bytearray(code_bytes)
+    for start, end, newtxt in replacements:
+        b[start:end] = newtxt.encode("utf-8") + b[start:end]
+    return b.decode("utf-8"), transforms
+
+
 def remove_prompt_from_code(combined_code: str, prompt_norm: str) -> str:
     """Remove the prompt prefix by line count using normalized prompt.
 
@@ -908,6 +1074,9 @@ def process_ts_replacements(
     seed: int = 12345,
     var_prob: float = 1.0,
     paren_layers: int = 0,
+    enable_deadcode: bool = False,
+    deadcode_prob: float = 0.0,
+    deadcode_max_per_func: int = 1,
 ):
     print("Step 1: Reading outputs from file...")
     # sanitize var_prob
@@ -962,6 +1131,11 @@ def process_ts_replacements(
         if paren_layers > 0:
             out_code, extra = _apply_parentheses_ts(out_code, paren_layers)
             out_trans.extend(extra)
+        if enable_deadcode and deadcode_prob > 0 and deadcode_max_per_func > 0:
+            out_code, extra_dc = _apply_deadcode_ts(
+                out_code, deadcode_max_per_func, deadcode_prob, rng
+            )
+            out_trans.extend(extra_dc)
         sol_code, sol_trans = _apply_renaming_ts(
             entry["solution_combined"],
             style,
@@ -975,6 +1149,11 @@ def process_ts_replacements(
         if paren_layers > 0:
             sol_code, extra2 = _apply_parentheses_ts(sol_code, paren_layers)
             sol_trans.extend(extra2)
+        if enable_deadcode and deadcode_prob > 0 and deadcode_max_per_func > 0:
+            sol_code, extra2_dc = _apply_deadcode_ts(
+                sol_code, deadcode_max_per_func, deadcode_prob, rng
+            )
+            sol_trans.extend(extra2_dc)
 
         stats["output_transformations"]["total_applied"] += len(out_trans)
         stats["solution_transformations"]["total_applied"] += len(sol_trans)
@@ -1221,6 +1400,23 @@ if __name__ == "__main__":
         default=0,
         help="Wrap assignment RHS with this many layers of parentheses and LHS identifiers with one (0=disable)",
     )
+    parser.add_argument(
+        "--enable-deadcode",
+        action="store_true",
+        help="Enable dead code insertion inside function bodies",
+    )
+    parser.add_argument(
+        "--deadcode-prob",
+        type=float,
+        default=0.0,
+        help="Probability (0..1) to insert one deadcode block per attempt in a function",
+    )
+    parser.add_argument(
+        "--deadcode-max-per-func",
+        type=int,
+        default=1,
+        help="Maximum number of deadcode blocks per function",
+    )
     args = parser.parse_args()
 
     process_ts_replacements(
@@ -1234,4 +1430,7 @@ if __name__ == "__main__":
         seed=args.seed,
         var_prob=args.var_prob,
         paren_layers=args.paren_layers,
+        enable_deadcode=args.enable_deadcode,
+        deadcode_prob=args.deadcode_prob,
+        deadcode_max_per_func=args.deadcode_max_per_func,
     )
