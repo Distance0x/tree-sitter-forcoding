@@ -157,19 +157,6 @@ python treesitter_replacement.py data.jsonl --mode style --rename-params --paren
 - 不修改注释、缩进、空行排布
 - 按字节区间替换（右到左），避免偏移错位
 
-## ⚠️ 已知局限 / 可改进方向
-| 项 | 说明 |
-|----|------|
-| 链式赋值显示 | 链式赋值加括号后视觉可能冗余 | 未来可选择跳过链式赋值 |
-| 已有外层括号 | 当前不检测“已在最外层有括号” | 可添加 `--avoid-duplicate-paren` |
-| underscore 模式强制一次插入 | 可能希望完全 0 变更 | 可加 `--allow-zero-underscore` |
-| var_prob 仅作用于 underscore | style 模式未用抽样 | 可统一逻辑 |
-| 参数 flag 默认逻辑 | 当前 `--rename-params` 为显式开启 | 可支持 `--no-rename-params` 反向开关 |
-
-## 🛠️ 开发与扩展建议
-- 新增 dead code / 语句块交换 / 操作数交换：可在重命名 & 括号阶段之后串联更多纯文本区间替换。
-- 引入最小差异约束：限制同一函数内最大/最小重命名变量数。
-- 输出 CSV：现有 `generate_statistics_csv()` 可扩展括号化单独计数。
 
 ## 🧷 示例快速对比
 输入：
@@ -184,15 +171,3 @@ python treesitter_replacement.py sample.jsonl --mode none --paren-layers 2
 ```python
 (result) = ((a * b + c))
 ```
-
-## ✅ 快速自检清单
-- 安装依赖成功（`tree-sitter-python` 可导入）
-- 输入文件格式正确 (`prompt/output/solution`)
-- 运行后统计里 `valid_entries > 0`
-- 输出 JSON 正常生成
-
-## 🧾 许可证
-（根据你项目实际 License 补充）
-
----
-有什么想扩展的（比如 dead code 注入、操作数交换、跳过已有括号检测）可以直接提，我可以继续帮你实现。
