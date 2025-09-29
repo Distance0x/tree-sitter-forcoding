@@ -97,6 +97,11 @@ def setup_args():
     parser.add_argument('--ts_underscore_prob', type=float, default=0.5, help='Probability for underscore insertion when using ts-replacement-underscore')
     parser.add_argument('--ts_underscore_repeat', type=int, default=1, help='Repeat count for underscore insertion when using ts-replacement-underscore')
     parser.add_argument('--ts_var_prob', type=float, default=1.0, help='Per-variable probability to apply rename in underscore mode')
+    # Tree-sitter parentheses / deadcode augmentation arguments
+    parser.add_argument('--ts_parentheses_layers', type=int, default=1, help='Number of nested parentheses layers to wrap certain expressions (ts-parentheses)')
+    parser.add_argument('--ts_deadcode_max_per_func', type=int, default=1, help='Maximum deadcode blocks inserted per function (ts-deadcode)')
+    parser.add_argument('--ts_deadcode_prob', type=float, default=0.3, help='Probability a function receives a deadcode insertion (ts-deadcode)')
+    parser.add_argument('--ts_deadcode_seed', type=int, default=0, help='RNG seed for deadcode insertion reproducibility')
 
     args_dict = {
         # 'dataset': "TheVault",
@@ -112,7 +117,7 @@ def setup_args():
         # 'base_model_name': "codellama/CodeLlama-7b-hf", # Make sure to use the same model as the one used for generating the samples
         # 'base_model_name': "ByteDance-Seed/Seed-Coder-8B-Instruct",
         'mask_filling_model_name': "Salesforce/codet5p-770m",
-        'batch_size': 16,
+        'batch_size': 32,
         'chunk_size': 10,
         'n_similarity_samples': 20,
         'int8': False,
@@ -430,41 +435,84 @@ def perturb_texts_(texts, args,  model_config, ceil_pct=False):
     pct = args.pct_words_masked
     lambda_poisson = args.span_length
     # 这部分明天再改改 封装成一个函数好一点
-    if args.perturb_type.startswith('ts-replacement'):
-        # Tree-sitter based variable renaming on prompt+text, then strip prompt
-        try:
-            style = _map_ts_style(args.perturb_type)
-        except Exception:
-            style = VariableRenameStyle.CAPITALIZE
+    if _is_ts_mode(args.perturb_type):
+        # Generalized Tree-sitter based structural perturbations
         from treesitter_replacement import (
             normalize_solution_preserve_leading as _norm,
             _apply_renaming_ts as _apply_ts,
+            _apply_parentheses_ts as _apply_paren,
+            _apply_deadcode_ts as _apply_dead,
             remove_prompt_from_code as _rm_prompt,
             RenameMode,
         )
+
+        pt = args.perturb_type.lower()
+        tokens = pt.split('-')[1:]  # drop leading 'ts'
+        # Capability flags
+        do_replacement = 'replacement' in tokens
+        underscore_mode = 'underscore' in tokens
+        do_parentheses = 'parentheses' in tokens
+        do_deadcode = 'deadcode' in tokens
+
+        # Style for replacement (default capitalize)
+        if do_replacement:
+            try:
+                style = _map_ts_style(pt)
+            except Exception:
+                style = VariableRenameStyle.CAPITALIZE
+        else:
+            style = None
+
         prompts_seq = model_config.get('ts_prompts_seq', [])
         idx_ptr = model_config.get('ts_prompt_idx', 0)
         outs = []
+
         for t in texts:
             p = prompts_seq[idx_ptr] if idx_ptr < len(prompts_seq) else ""
             idx_ptr += 1
             combined = _norm(f"{p}\n{t}")
+            transformed = combined
             try:
-                # Support underscore mode via perturb_type name 'ts-replacement-underscore'
-                if args.perturb_type == 'ts-replacement-underscore':
-                    new_code, _ = _apply_ts(
-                        combined,
-                        style,
-                        rename_params=getattr(args, 'rename_params', True),
-                        mode=RenameMode.UNDERSCORE,
-                        underscore_prob=getattr(args, 'ts_underscore_prob', 0.5),
-                        underscore_repeat=getattr(args, 'ts_underscore_repeat', 1),
-                        rng=None,
-                        var_prob=getattr(args, 'ts_var_prob', 1.0),
-                    )
-                else:
-                    new_code, _ = _apply_ts(combined, style, rename_params=getattr(args, 'rename_params', True))
-                final = _rm_prompt(new_code, _norm(p))
+                # 1. Variable renaming / underscore mode
+                if do_replacement:
+                    if underscore_mode:
+                        transformed, _ = _apply_ts(
+                            transformed,
+                            style,
+                            rename_params=getattr(args, 'rename_params', True),
+                            mode=RenameMode.UNDERSCORE,
+                            underscore_prob=getattr(args, 'ts_underscore_prob', 0.5),
+                            underscore_repeat=getattr(args, 'ts_underscore_repeat', 1),
+                            rng=None,
+                            var_prob=getattr(args, 'ts_var_prob', 1.0),
+                        )
+                    else:
+                        transformed, _ = _apply_ts(
+                            transformed,
+                            style,
+                            rename_params=getattr(args, 'rename_params', True),
+                        )
+                # 2. Parentheses wrapping
+                if do_parentheses:
+                    try:
+                        transformed = _apply_paren(
+                            transformed,
+                            layers=getattr(args, 'ts_parentheses_layers', 1),
+                        )
+                    except Exception:
+                        pass
+                # 3. Dead code insertion
+                if do_deadcode:
+                    try:
+                        transformed = _apply_dead(
+                            transformed,
+                            max_per_func=getattr(args, 'ts_deadcode_max_per_func', 1),
+                            prob=getattr(args, 'ts_deadcode_prob', 0.3),
+                            seed=getattr(args, 'ts_deadcode_seed', 0),
+                        )
+                    except Exception:
+                        pass
+                final = _rm_prompt(transformed, _norm(p))
             except Exception:
                 final = t
             outs.append(final)
@@ -1042,9 +1090,9 @@ def random_generate_line_comment(text, pct=0.3, mode='inline', model_config=None
 
 # tree-sitter相关的函数
 def _is_ts_mode(perturb_type: str) -> bool:
-    """Return True when using Tree-sitter replacement perturbation family."""
+    """Return True when using any Tree-sitter based perturbation (ts-*)."""
     try:
-        return isinstance(perturb_type, str) and perturb_type.startswith("ts-replacement")
+        return isinstance(perturb_type, str) and perturb_type.startswith("ts-")
     except Exception:
         return False
 
@@ -1385,7 +1433,7 @@ def main():
     if args.perturb_type == 'random':
         masked_texts = [tokenize_and_mask(
             x, args, span_length, pct, ceil_pct) for x in texts]
-    elif args.perturb_type.startswith('ts-replacement'):
+    elif _is_ts_mode(args.perturb_type):
         # TS 模式下，这里只是演示占位，不做掩码预览
         masked_texts = list(texts)
     elif args.perturb_type == 'identifier-masking':
