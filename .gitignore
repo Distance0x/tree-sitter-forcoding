@@ -1,0 +1,7 @@
+# pycache
+__pycache__
+CodeSearchNet/
+*.log
+*.json
+*.jsonl
+*.csv
