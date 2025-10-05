@@ -619,7 +619,7 @@ def perturb_texts_(texts, args,  model_config, ceil_pct=False):
         perturbed_texts_part3 = [random_insert_newline(
             x, pct, lambda_poisson) for x in texts]
         perturbed_texts_part4 = [random_insert_empty_triple_quote_lines_without_newline(
-            x, pct, lambda_poisson) for x in texts]
+            x, pct) for x in texts]
         total_num = len(perturbed_texts_part1)
         n1 = total_num // 4
         n2 = (total_num - n1) // 3
@@ -1497,7 +1497,7 @@ def main():
         masked_texts_part3 = [random_insert_newline(
             x, pct, lambda_poisson) for x in texts]
         masked_texts_part4 = [random_insert_empty_triple_quote_lines_without_newline(
-            x, pct, lambda_poisson) for x in texts]
+            x, pct) for x in texts]
         total_num = len(masked_texts_part1)
         n1 = total_num // 4
         n2 = (total_num - n1) // 3
