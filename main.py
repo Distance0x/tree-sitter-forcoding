@@ -572,6 +572,10 @@ def perturb_texts_(texts, args,  model_config, ceil_pct=False):
         perturbed_texts = [random_insert_empty_triple_quote_lines_without_newline(
             x, pct) for x in texts]
         return perturbed_texts
+    elif args.perturb_type == 'random-insert-todo':
+        perturbed_texts = [random_insert_todo(
+            x, pct) for x in texts]
+        return perturbed_texts
     elif args.perturb_type == 'space+comment':
         perturbed_texts_part1 = [random_insert_space(
             x, pct, lambda_poisson) for x in texts]
@@ -630,6 +634,8 @@ def perturb_texts_(texts, args,  model_config, ceil_pct=False):
         perturbed_texts_part3 = perturbed_texts_part3[:n3]
         perturbed_texts_part4 = perturbed_texts_part4[:n4]
         return perturbed_texts_part1 + perturbed_texts_part2 + perturbed_texts_part3 + perturbed_texts_part4
+
+    
     elif args.perturb_type == 'gen-comment':
         mode = getattr(args, 'gen_comment_mode', 'inline')
         perturbed_texts = [random_generate_line_comment(
@@ -850,6 +856,37 @@ def random_insert_empty_comment_lines(text, pct=0.3):
                 j += 1
             indent = ref_line[:j]
         lines.insert(idx, indent + '#')
+    return '\n'.join(lines)
+
+def random_insert_todo(text, pct=0.3):
+    '''
+    randomly insert a blank line and an indented "# TODO:" line for pct of the lines
+    '''
+    lines = text.split('\n')
+    n_lines = len(lines)
+    if n_lines == 0:
+        return text
+    n_inserted = int(n_lines * pct)
+    if n_inserted <= 0:
+        n_inserted = 1
+    # 允许在行间或末尾插入，位置范围 [0, n_lines]
+    idxs = np.random.choice(n_lines + 1, n_inserted, replace=False)
+    # 逆序插入以避免位置偏移
+    for idx in sorted(idxs, reverse=True):
+        indent = ''
+        ref_line = None
+        if idx < n_lines:
+            ref_line = lines[idx]
+        elif n_lines > 0:
+            ref_line = lines[-1]
+        if ref_line is not None:
+            j = 0
+            while j < len(ref_line) and ref_line[j] in (' ', '\t'):
+                j += 1
+            indent = ref_line[:j]
+        # 插入一个空白行和一个带缩进的 TODO 注释行
+        lines.insert(idx, indent + '# TODO:')
+        lines.insert(idx, '')
     return '\n'.join(lines)
 
 
@@ -1451,6 +1488,9 @@ def main():
             x, pct) for x in texts]
     elif args.perturb_type == 'random-insert-empty-comment-lines':
         masked_texts = [random_insert_empty_comment_lines(
+            x, pct) for x in texts]
+    elif args.perturb_type == 'random-insert-todo':
+        masked_texts = [random_insert_todo(
             x, pct) for x in texts]
     elif args.perturb_type == 'space+comment':
         masked_texts_part1 = [random_insert_space(
