@@ -634,6 +634,31 @@ def perturb_texts_(texts, args,  model_config, ceil_pct=False):
         perturbed_texts_part3 = perturbed_texts_part3[:n3]
         perturbed_texts_part4 = perturbed_texts_part4[:n4]
         return perturbed_texts_part1 + perturbed_texts_part2 + perturbed_texts_part3 + perturbed_texts_part4
+    
+    # 炼丹启动
+    elif args.perturb_type == 'todo+comment+space+newline+quote':
+        perturbed_texts_part1 = [random_insert_todo(
+            x, pct) for x in texts]
+        perturbed_texts_part2 = [random_insert_comment(
+            x, pct, lambda_poisson) for x in texts]
+        perturbed_texts_part3 = [random_insert_space(
+            x, pct, lambda_poisson) for x in texts]
+        perturbed_texts_part4 = [random_insert_newline(
+            x, pct, lambda_poisson) for x in texts]
+        perturbed_texts_part5 = [random_insert_empty_triple_quote_lines_without_newline(
+            x, pct) for x in texts]
+        total_num = len(perturbed_texts_part1)
+        n1 = total_num // 5
+        n2 = (total_num - n1) // 4
+        n3 = (total_num - n1 - n2) // 3
+        n4 = (total_num - n1 - n2 - n3) // 2
+        n5 = total_num - n1 - n2 - n3 - n4
+        perturbed_texts_part1 = perturbed_texts_part1[:n1]
+        perturbed_texts_part2 = perturbed_texts_part2[:n2]
+        perturbed_texts_part3 = perturbed_texts_part3[:n3]
+        perturbed_texts_part4 = perturbed_texts_part4[:n4]
+        perturbed_texts_part5 = perturbed_texts_part5[:n5]
+        return perturbed_texts_part1 + perturbed_texts_part2 + perturbed_texts_part3 + perturbed_texts_part4 + perturbed_texts_part5
 
     
     elif args.perturb_type == 'gen-comment':
@@ -1548,6 +1573,30 @@ def main():
         masked_texts_part3 = masked_texts_part3[:n3]
         masked_texts_part4 = masked_texts_part4[:n4]
         masked_texts = masked_texts_part1 + masked_texts_part2 + masked_texts_part3 + masked_texts_part4
+    
+    elif args.perturb_type == 'todo+comment+space+newline+quote':
+        masked_texts_part1 = [random_insert_todo(
+            x, pct) for x in texts]
+        masked_texts_part2 = [random_insert_comment(
+            x, pct, lambda_poisson) for x in texts]
+        masked_texts_part3 = [random_insert_space(
+            x, pct, lambda_poisson) for x in texts]
+        masked_texts_part4 = [random_insert_newline(
+            x, pct, lambda_poisson) for x in texts]
+        masked_texts_part5 = [random_insert_empty_triple_quote_lines_without_newline(
+            x, pct) for x in texts]
+        total_num = len(masked_texts_part1)
+        n1 = total_num // 5
+        n2 = (total_num - n1) // 4
+        n3 = (total_num - n1 - n2) // 3
+        n4 = (total_num - n1 - n2 - n3) // 2
+        n5 = total_num - n1 - n2 - n3 - n4
+        masked_texts_part1 = masked_texts_part1[:n1]
+        masked_texts_part2 = masked_texts_part2[:n2]
+        masked_texts_part3 = masked_texts_part3[:n3]
+        masked_texts_part4 = masked_texts_part4[:n4]
+        masked_texts_part5 = masked_texts_part5[:n5]
+        masked_texts = masked_texts_part1 + masked_texts_part2 + masked_texts_part3 + masked_texts_part4 + masked_texts_part5
     elif args.perturb_type == 'gen-comment':
         mode = getattr(args, 'gen_comment_mode', 'inline')
         masked_texts = [random_generate_line_comment(
